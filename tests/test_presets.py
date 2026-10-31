@@ -17,3 +17,14 @@ def test_social_media_preset_offers_notebook_example_pairs_in_order():
         "The hiking trail was beautiful and peaceful.",
     ]
     assert pairs[1].output == "Last night's concert was FIRE 🔥🔥 Totally vibing to those beats! #blessed #musicislife"
+
+
+def test_email_preset_offers_train_pairs_in_fixed_order_and_never_test_pairs():
+    from style_lab.dataset import train_test_split
+
+    split = train_test_split()
+    pairs = PRESETS["Professional email"].example_pairs()
+
+    assert pairs == list(split.train)
+    assert pairs[0].input.startswith("feedback 4 mobile app\n")
+    assert not set(pairs) & set(split.test)
