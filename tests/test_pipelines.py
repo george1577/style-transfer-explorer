@@ -1,6 +1,8 @@
 """Seam A: technique pipelines, driven by a fake text model (no downloads)."""
-from style_lab.pipelines import run_zero_shot
+from style_lab.dataset import train_test_split
+from style_lab.pipelines import run_few_shot, run_zero_shot
 from style_lab.presets import PRESETS
+from style_lab.prompts import ExamplePair
 
 
 class FakeTextModel:
@@ -75,3 +77,73 @@ def test_zero_shot_social_media_gets_social_media_checklist():
 
     assert result.prompt.startswith("system: Convert the following text into social media styled text:")
     assert {c.name: c.passed for c in result.checklist} == {"Emoji": True, "Hashtags": True}
+
+
+# ---- ② few-shot ------------------------------------------------------------------------
+
+def test_few_shot_with_k_0_is_exactly_the_zero_shot_prompt():
+    for preset in PRESETS.values():
+        zero = run_zero_shot(FakeTextModel("x"), preset, preset.default_input)
+        few = run_few_shot(FakeTextModel("x"), preset, preset.default_input, k=0)
+
+        assert few.prompt == zero.prompt
+        assert few.prompt_tokens == zero.prompt_tokens
+        assert few.technique == "Few-shot"
+
+
+def example_turns(result):
+    """The (input, output) example pairs a result's prompt contained, in order."""
+    turns = result.messages[1:-1]
+    return [(u["content"], a["content"]) for u, a in zip(turns[::2], turns[1::2])]
+
+
+def test_few_shot_email_includes_exactly_k_train_pairs_in_fixed_order():
+    preset = PRESETS["Professional email"]
+    train = train_test_split().train
+
+    for k in range(9):
+        result = run_few_shot(FakeTextModel("x"), preset, "my notes", k=k)
+
+        assert example_turns(result) == [(p.input, p.output) for p in train[:k]]
+        assert result.messages[0] == {"role": "system", "content": preset.instructions}
+        assert result.messages[-1] == {"role": "user", "content": "my notes"}
+    first = example_turns(run_few_shot(FakeTextModel("x"), preset, "n", k=1))[0]
+    assert first[0].startswith("feedback 4 mobile app")  # record 0 of the dataset
+
+
+def test_few_shot_prompt_never_contains_a_test_pair():
+    preset = PRESETS["Professional email"]
+    result = run_few_shot(FakeTextModel("x"), preset, preset.default_input, k=8)
+
+    for pair in train_test_split().test:
+        assert pair.input not in result.prompt
+        assert pair.output not in result.prompt
+
+
+def test_few_shot_token_count_grows_with_k():
+    preset = PRESETS["Professional email"]
+    counts = [run_few_shot(FakeTextModel("x"), preset, preset.default_input, k=k).prompt_tokens
+              for k in range(9)]
+
+    assert all(a < b for a, b in zip(counts, counts[1:]))
+
+
+def test_few_shot_social_media_uses_notebook_pairs_capped_at_four():
+    preset = PRESETS["Social media"]
+    result = run_few_shot(FakeTextModel("x"), preset, "The sunset was beautiful this evening.", k=8)
+
+    assert [i for i, _ in example_turns(result)] == [
+        "The movie was fantastic!",
+        "I enjoyed the concert last night.",
+        "The new restaurant has great food.",
+        "The hiking trail was beautiful and peaceful.",
+    ]
+
+
+def test_few_shot_uses_edited_example_pairs_and_attaches_checklist():
+    preset = PRESETS["Professional email"]
+    edited = [ExamplePair("notes A", "Subject: wrong"), ExamplePair("notes B", "email B")]
+    result = run_few_shot(FakeTextModel(EMAIL_OUTPUT), preset, preset.default_input, k=1, example_pairs=edited)
+
+    assert example_turns(result) == [("notes A", "Subject: wrong")]
+    assert all(c.passed for c in result.checklist)

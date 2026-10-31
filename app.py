@@ -3,12 +3,13 @@ from pathlib import Path
 
 import streamlit as st
 
-from style_lab.pipelines import TextResult, run_zero_shot
+from style_lab.pipelines import TextResult, run_few_shot, run_zero_shot
 from style_lab.presets import PRESETS
+from style_lab.prompts import ExamplePair
 from style_lab.text_model import DEVICE_ENV_VAR, MODELS, QwenTextModel, pick_device
 
 DOC_LINK = "docs/how-style-transfer-works.md"
-RESULT_KEYS = ("t1",)
+RESULT_KEYS = ("t1", "t2")
 
 st.set_page_config(page_title="Style Transfer Explorer", page_icon="🎨", layout="wide")
 
@@ -52,10 +53,10 @@ with st.sidebar:
                             help="0 = greedy (same output every time). The notebooks use 0.7.")
     lm = get_model(model_id)
     st.caption(f"Running on **{lm.device}** (set `{DEVICE_ENV_VAR}` to change)")
-    st.markdown("**Learning path**\n1. Zero-shot\n\n"
+    st.markdown("**Learning path**\n1. Zero-shot\n2. Few-shot\n\n"
                 f"Read the companion guide: `{DOC_LINK}`")
 
-tab1, tab4 = st.tabs(["① Zero-shot", "④ Image"])
+tab1, tab2, tab4 = st.tabs(["① Zero-shot", "② Few-shot", "④ Image"])
 
 with tab1:
     st.header("① Zero-shot")
@@ -74,6 +75,37 @@ with tab1:
     if result := st.session_state.get("t1"):
         show_result(result)
 
+with tab2:
+    st.header("② Few-shot")
+    st.markdown(
+        "Few-shot style transfer is zero-shot plus example pairs: input→output demonstrations placed in the "
+        "prompt before the new input. Slide k to add examples and watch the prompt, its token count and the "
+        "style checklist change together. At k = 0 the prompt is exactly the zero-shot prompt."
+    )
+    preset = PRESETS[st.selectbox("Style preset", list(PRESETS), key="t2_preset")]
+    available = preset.example_pairs()
+    max_k = min(8, len(available))
+    k = st.slider("k (example pairs in the prompt)", 0, max_k, min(3, max_k), key=f"t2_k_{preset.name}")
+    if max_k < 8:
+        st.caption(f"This preset has {len(available)} example pairs (notebook 1's), so k stops at {max_k}.")
+    elif preset.name == "Professional email":
+        st.caption("Email example pairs come, in fixed order, from the dataset's 180 training pairs; "
+                   "the 20 test pairs never appear in a prompt.")
+    instructions = st.text_area("Instructions (system prompt)", preset.instructions,
+                                key=f"t2_instructions_{preset.name}")
+    pairs = []
+    for i, pair in enumerate(available[:k], start=1):
+        with st.expander(f"Example pair {i} (editable)"):
+            pair_in = st.text_area("Input", pair.input, key=f"t2_pair_in_{preset.name}_{i}")
+            pair_out = st.text_area("Output", pair.output, height=200, key=f"t2_pair_out_{preset.name}_{i}")
+            pairs.append(ExamplePair(pair_in, pair_out))
+    text = st.text_area("Input", preset.default_input, height=180, key=f"t2_input_{preset.name}")
+    if st.button("Generate", type="primary", key="t2_go"):
+        with st.spinner("Generating…"):
+            st.session_state["t2"] = run_few_shot(lm, preset, text, k, instructions, example_pairs=pairs,
+                                                  temperature=temperature)
+    if result := st.session_state.get("t2"):
+        show_result(result)
 
 # ---------- ④ Image ----------
 import io  # noqa: E402

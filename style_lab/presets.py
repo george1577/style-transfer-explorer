@@ -1,19 +1,15 @@
 """Style presets: a named target style with its instructions, default input, example pairs and checklist.
 
 Example pairs come from a source function, so each preset can get them from wherever fits:
-social media uses notebook 1's four pairs; Professional email will draw them from the dataset's
-train split (wired in with the dataset module).
+social media uses notebook 1's four pairs; Professional email draws them, in fixed order, from the
+dataset's train split (so test pairs never reach a prompt).
 """
 from collections.abc import Callable
 from dataclasses import dataclass
 
 from style_lab.checklist import Check, email_checklist, social_media_checklist
-
-
-@dataclass(frozen=True)
-class ExamplePair:
-    input: str
-    output: str
+from style_lab.dataset import train_test_split
+from style_lab.prompts import ExamplePair
 
 
 @dataclass(frozen=True)
@@ -38,9 +34,8 @@ details:
 - send 2 me when rdy"""
 
 
-def no_example_pairs() -> list[ExamplePair]:
-    # Placeholder until the dataset's train split is wired in as the email example-pair source.
-    return []
+def email_train_pairs() -> list[ExamplePair]:
+    return list(train_test_split().train)
 
 
 # ---- Social media (notebook 1) --------------------------------------------------------
@@ -67,7 +62,7 @@ PRESETS: dict[str, StylePreset] = {
     p.name: p
     for p in [
         StylePreset("Professional email", EMAIL_INSTRUCTIONS, EMAIL_DEFAULT_INPUT,
-                    example_pairs=no_example_pairs, checklist=email_checklist),
+                    example_pairs=email_train_pairs, checklist=email_checklist),
         StylePreset("Social media", SOCIAL_MEDIA_INSTRUCTIONS, "The sunset was beautiful this evening.",
                     example_pairs=social_media_pairs, checklist=social_media_checklist),
     ]
