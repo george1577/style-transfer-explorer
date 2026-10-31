@@ -1,7 +1,11 @@
 # Style Transfer Explorer
 
-An interactive Streamlit app for seeing how a generative model can be made to rewrite text in a target style, and what each technique costs. It's a companion to the *Style Transfer* examples in [Generative AI Design Patterns](https://github.com/lakshmanok/generative-ai-design-patterns) (`examples/03_style_transfer`).
+An interactive Streamlit app for seeing how a generative model can be made to rewrite text or images in a target style, and what each technique costs. It's a companion to the *Style Transfer* examples in [Generative AI Design Patterns](https://github.com/lakshmanok/generative-ai-design-patterns) (`examples/03_style_transfer`).
 
+It runs a small open model (Qwen2.5) on your laptop CPU, so you can inspect every prompt and its token cost for free, and covers notebooks 0 to 3.
+
+> **New to this?** Read [docs/how-style-transfer-works.md](docs/how-style-transfer-works.md) first.
+> It explains content vs style, the cost/quality trade-off of the three text techniques, and depth conditioning, with real examples from this app.
 > Terms are defined in [GLOSSARY.md](GLOSSARY.md).
 
 ---
@@ -30,6 +34,8 @@ The first click is slow while the model downloads and loads; after that it is ca
 ---
 
 ## How the app works
+
+The app has four tabs, meant to be followed in order. Each one adds one idea on top of the last.
 
 ### ① Zero-shot
 
@@ -64,6 +70,27 @@ The first click is slow while the model downloads and loads; after that it is ca
 
 **What you see:** the prompt token count (it grows with every example pair), the rendered prompt, the output and its style checklist.
 
+### ③ Fine-tuned
+
+**What it shows:** what training an adapter adds: few-shot-like style at zero-shot-like token cost.
+
+**You provide:** one of the 20 test pairs from a dropdown, or your own notes (default: notebook 2's free-text test, "schedule a meeting with John about the Q4 planning"). There is no style preset dropdown, because the adapter is email-only. The tab always uses the 0.5B base model, whatever the sidebar says: an adapter only works with the base model it was trained on.
+
+**What happens when you click *Generate base vs fine-tuned*:**
+1. The input becomes the short zero-shot prompt (the email system prompt + the notes, no example pairs).
+2. The base model replies, then the same weights with the adapter switched on reply to the same prompt (one copy of the weights in memory; `peft` switches the adapter off for the base run).
+3. The style checklist checks both replies.
+
+**What happens when you click *Run the three-way comparison*:** zero-shot, few-shot (k = 3) and fine-tuned each run on the same input, all on the 0.5B model.
+
+**What you see:**
+- Base and fine-tuned outputs side by side, each with its prompt token count, rendered prompt and style checklist, plus the test pair's reference answer.
+- The three-way comparison in three columns: watch the prompt token counts go cheap → expensive → cheap.
+- *What training did*: the training loss curve saved during training, the training settings, and a slider to browse the 180 training pairs the adapter learned from.
+- If the adapter is missing, instructions to train it.
+
+The adapter (LoRA, ~4 MB) and its loss history are committed in `adapters/qwen2.5-0.5b-email/`, so you don't need to train it. To reproduce it, run `uv run python scripts/train_adapter.py` (3 epochs over the 180 training pairs; it took about 80 minutes on an M2 CPU).
+
 ### ④ Image
 
 **What it shows:** how a depth map carries a reference image's composition into image generation, and how strength and guidance shape the result.
@@ -94,6 +121,7 @@ app.py                  Streamlit UI. The only file that knows about Streamlit.
 style_lab/
   text_model.py         Text model interface + Qwen implementation; the only file touching torch.
   pipelines.py          One function per tab; each returns a TextResult. The app calls only these.
+  adapter.py            Where the trained adapter and its loss history live.
   prompts.py            Builds the chat messages for each technique.
   presets.py            Style presets: instructions, default input, example pairs, checklist.
   dataset.py            Loads the email example pairs and makes the fixed 180/20 train/test split.
@@ -101,24 +129,36 @@ style_lab/
   image_grid.py         Reference images, prompts, grid axes, and the grid manifest (written by the script, read by the app).
   depth.py              Depth maps with Depth Anything V2 Small (app and grid script).
   live_generation.py    SD1.5 + depth ControlNet img2img; GPU only.
+scripts/train_adapter.py  Trains the LoRA adapter on the 180 training pairs (CPU).
 scripts/render_grid.py  Colab T4 script that renders the image grid and its manifest.
+adapters/               The trained adapter and its loss history (committed).
 data/                   The book's email dataset (fine_tuning_dataset.jsonl).
 data/images/            The two reference images (512 px).
 tests/                  Fake text model and fake grid manifests, no downloads.
-docs/adr/               Architecture decisions.
+docs/
+  how-style-transfer-works.md   Plain-language explainer with real examples.
+  adr/                  Architecture decisions.
+GLOSSARY.md             The project's vocabulary.
 ```
 
 ## Differences from the reference notebooks
 
-- Text runs on a local Qwen2.5 model instead of OpenAI `gpt-3.5-turbo` (see [ADR 0001](docs/adr/0001-local-qwen-instead-of-openai.md)).
-- Social media instructions go in a system message rather than the first line of a single user message.
-- Few-shot example pairs are user / assistant chat turns, rather than notebook 1's `Input:` / `Output:` lines in one message.
-- Depth maps use Depth Anything V2 Small instead of the notebook's default DPT-Large, and the image results come from a precomputed grid instead of live generation (see [ADR 0002](docs/adr/0002-precomputed-image-grid-instead-of-live-generation.md)). The grid uses a fixed seed and 50 steps (the notebook uses 100 steps and no seed); images without depth conditioning use the same pipeline with the ControlNet's conditioning scale set to 0.
+Each change makes a technique runnable on a laptop or easier to inspect, without changing the technique. Section 8 of the [explainer](docs/how-style-transfer-works.md#8-where-the-app-differs-from-the-notebooks) explains why.
+
+- **Local Qwen instead of OpenAI.** Text runs on a local Qwen2.5 model (0.5B default, 1.5B optional) instead of OpenAI `gpt-3.5-turbo` (see [ADR 0001](docs/adr/0001-local-qwen-instead-of-openai.md)). Writing is weaker, but every click is free and the exact prompt and token count are visible. Temperature defaults to 0 (greedy) instead of the notebooks' 0.7 / API default.
+- **A local adapter instead of an OpenAI fine-tuning job.** Notebook 2 uploads the dataset to a paid OpenAI fine-tuning job. The app ships a LoRA adapter trained locally on CPU (`scripts/train_adapter.py`).
+- **A held-out test split.** Notebook 2 tests its fine-tuned model on a training example (and says that's bad practice). The app holds out 20 test pairs that never appear in training or in few-shot prompts (see [The dataset and its split](#the-dataset-and-its-split)).
+- **Few-shot example pairs as chat turns.** Each example pair is a user turn followed by an assistant turn, rather than notebook 1's `Input:` / `Output:` lines in one message.
+- **Social media instructions as a system message**, rather than the first line of a single user message.
+- **Depth Anything V2 Small instead of DPT-Large** for depth maps (the notebook uses the `depth-estimation` pipeline's default, Intel DPT-Large); it is small enough to run live on CPU.
+- **A precomputed image grid instead of live generation** (see [ADR 0002](docs/adr/0002-precomputed-image-grid-instead-of-live-generation.md)). The grid uses a fixed seed and 50 steps (the notebook uses 100 steps and no seed); images without depth conditioning use the same pipeline with the ControlNet's conditioning scale set to 0. Live generation is offered only on a GPU.
 
 ## Credits
 
-The source notebooks are from [Generative AI Design Patterns](https://github.com/lakshmanok/generative-ai-design-patterns) by Valliappa Lakshmanan and Hannes Hapke (Apache License 2.0). The email dataset in `data/fine_tuning_dataset.jsonl` is copied unchanged from that repo (`examples/03_style_transfer/fine_tuning_dataset.jsonl`).
+The source notebooks are from [Generative AI Design Patterns](https://github.com/lakshmanok/generative-ai-design-patterns) by Valliappa Lakshmanan and Hannes Hapke ([O'Reilly](https://www.oreilly.com/library/view/generative-ai-design/9798341622654/); code under the Apache License 2.0). The email dataset in `data/fine_tuning_dataset.jsonl` is copied unchanged from that repo (`examples/03_style_transfer/fine_tuning_dataset.jsonl`).
 
 Reference images (public domain, via Wikimedia Commons; resized to 512 px in `data/images/`):
 - *Wanderer above the Sea of Fog* (c. 1817), Caspar David Friedrich: [Commons page](https://commons.wikimedia.org/wiki/File:Caspar_David_Friedrich_-_Wanderer_above_the_sea_of_fog.jpg)
 - *Paris Street; Rainy Day* (1877), Gustave Caillebotte: [Commons page](https://commons.wikimedia.org/wiki/File:Gustave_Caillebotte_-_Paris_Street;_Rainy_Day_-_Google_Art_Project.jpg)
+
+The depth maps in `docs/images/` were computed from these images by the app's depth module (Depth Anything V2 Small).

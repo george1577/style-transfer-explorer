@@ -9,6 +9,8 @@ from style_lab.prompts import ExamplePair
 from style_lab.text_model import DEVICE_ENV_VAR, MODELS, QwenTextModel, pick_device
 
 DOC_LINK = "docs/how-style-transfer-works.md"
+# A relative path is not a working link inside Streamlit, so link to the repo's copy on GitHub.
+DOC_URL = f"https://github.com/george1577/style-transfer-explorer/blob/main/{DOC_LINK}"
 RESULT_KEYS = ("t1", "t2", "t3", "t3_three")
 
 st.set_page_config(page_title="Style Transfer Explorer", page_icon="🎨", layout="wide")
@@ -53,8 +55,8 @@ with st.sidebar:
                             help="0 = greedy (same output every time). The notebooks use 0.7.")
     lm = get_model(model_id)
     st.caption(f"Running on **{lm.device}** (set `{DEVICE_ENV_VAR}` to change)")
-    st.markdown("**Learning path**\n1. Zero-shot\n2. Few-shot\n3. Fine-tuned\n\n"
-                f"Read the companion guide: `{DOC_LINK}`")
+    st.markdown("**Learning path**\n1. Zero-shot\n2. Few-shot\n3. Fine-tuned\n4. Image\n\n"
+                f"Read the companion guide: [`{DOC_LINK}`]({DOC_URL}) (also in this repo)")
 
 tab1, tab2, tab3, tab4 = st.tabs(["① Zero-shot", "② Few-shot", "③ Fine-tuned", "④ Image"])
 
@@ -141,7 +143,7 @@ with tab3:
 
     if not adapter_available():
         st.warning(f"**No adapter found** in `{ADAPTER_DIR.relative_to(Path(__file__).parent)}`. Train it with\n\n"
-                   f"```\n{TRAIN_COMMAND}\n```\n\nIt takes ~15–40 minutes on a laptop CPU and writes the adapter "
+                   f"```\n{TRAIN_COMMAND}\n```\n\nIt takes about 80 minutes on an M2 CPU and writes the adapter "
                    "and its loss history there. Then reload this page.")
     else:
         test_pairs = fine_tuned_inputs()
