@@ -1,0 +1,26 @@
+[project]
+name = "style-transfer-explorer"
+version = "0.1.0"
+description = "Interactive Streamlit app for learning how zero-shot, few-shot, fine-tuning and depth conditioning do style transfer"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "peft>=0.13",
+    "streamlit>=1.40",
+    "torch>=2.5",
+    "transformers>=4.46",
+    # Image (tab ④): depth maps, optional live generation
+    "accelerate>=1.0",
+    "diffusers>=0.30",
+    "pillow>=10",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.uv]
+package = false          # not an installable package; app.py imports the folder directly
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
