@@ -9,7 +9,7 @@ from style_lab.prompts import ExamplePair
 from style_lab.text_model import DEVICE_ENV_VAR, MODELS, QwenTextModel, pick_device
 
 DOC_LINK = "docs/how-style-transfer-works.md"
-RESULT_KEYS = ("t1", "t2")
+RESULT_KEYS = ("t1", "t2", "t3", "t3_three")
 
 st.set_page_config(page_title="Style Transfer Explorer", page_icon="🎨", layout="wide")
 
@@ -53,10 +53,10 @@ with st.sidebar:
                             help="0 = greedy (same output every time). The notebooks use 0.7.")
     lm = get_model(model_id)
     st.caption(f"Running on **{lm.device}** (set `{DEVICE_ENV_VAR}` to change)")
-    st.markdown("**Learning path**\n1. Zero-shot\n2. Few-shot\n\n"
+    st.markdown("**Learning path**\n1. Zero-shot\n2. Few-shot\n3. Fine-tuned\n\n"
                 f"Read the companion guide: `{DOC_LINK}`")
 
-tab1, tab2, tab4 = st.tabs(["① Zero-shot", "② Few-shot", "④ Image"])
+tab1, tab2, tab3, tab4 = st.tabs(["① Zero-shot", "② Few-shot", "③ Fine-tuned", "④ Image"])
 
 with tab1:
     st.header("① Zero-shot")
@@ -106,6 +106,106 @@ with tab2:
                                                   temperature=temperature)
     if result := st.session_state.get("t2"):
         show_result(result)
+
+# ---------- ③ Fine-tuned ----------
+from style_lab.adapter import (  # noqa: E402
+    ADAPTER_BASE_MODEL, ADAPTER_DIR, TRAIN_COMMAND, adapter_available, load_loss_history)
+from style_lab.dataset import train_test_split  # noqa: E402
+from style_lab.pipelines import (  # noqa: E402
+    THREE_WAY_K, fine_tuned_inputs, run_fine_tuned_comparison, run_three_way_comparison)
+from style_lab.text_model import AdaptedQwenTextModel  # noqa: E402
+
+FREE_TEXT = "Type your own notes…"
+FREE_TEXT_DEFAULT = "schedule a meeting with John about the Q4 planning"  # notebook 2's free-text test
+
+
+@st.cache_resource(show_spinner="Loading the 0.5B base model with the adapter…")
+def get_adapted_model() -> AdaptedQwenTextModel:
+    # Its own copy of the 0.5B weights: loading an adapter modifies the model it is loaded into,
+    # so sharing the sidebar's model would change tabs ① and ② too. Loaded only on first Generate.
+    return AdaptedQwenTextModel(ADAPTER_BASE_MODEL, ADAPTER_DIR)
+
+
+with tab3:
+    st.header("③ Fine-tuned")
+    st.markdown(
+        "Fine-tuning teaches the style through training instead of through the prompt. A small **adapter** "
+        "(LoRA, ~4 MB) was trained on the dataset's 180 training pairs on top of the 0.5B **base model**. "
+        "Both models below get the same short prompt (system prompt + notes, no examples): any difference "
+        "is what training added. Inputs are the 20 **test pairs**, which the adapter never saw."
+    )
+    if model_id != ADAPTER_BASE_MODEL:
+        st.info(f"The sidebar says **{model_id}**, but this tab always uses **{ADAPTER_BASE_MODEL}**: an adapter "
+                "only works with the base model it was trained on (it stores small changes to that model's weights).")
+    st.caption("The adapter is email-only, so this tab has no style preset dropdown.")
+
+    if not adapter_available():
+        st.warning(f"**No adapter found** in `{ADAPTER_DIR.relative_to(Path(__file__).parent)}`. Train it with\n\n"
+                   f"```\n{TRAIN_COMMAND}\n```\n\nIt takes ~15–40 minutes on a laptop CPU and writes the adapter "
+                   "and its loss history there. Then reload this page.")
+    else:
+        test_pairs = fine_tuned_inputs()
+        labels = [f"Test pair {i}: {p.input.splitlines()[0][:70]}" for i, p in enumerate(test_pairs, start=1)]
+        choice = st.selectbox("Input", [*labels, FREE_TEXT], key="t3_choice")
+        if choice == FREE_TEXT:
+            text, reference = st.text_area("Your notes", FREE_TEXT_DEFAULT, height=120, key="t3_free"), None
+        else:
+            pair = test_pairs[labels.index(choice)]
+            text, reference = pair.input, pair.output
+            st.code(text, language=None, wrap_lines=True)
+
+        if st.button("Generate base vs fine-tuned", type="primary", key="t3_go"):
+            tuned = get_adapted_model()
+            with st.spinner("Generating with the base model, then with the adapter…"):
+                st.session_state["t3"] = run_fine_tuned_comparison(
+                    tuned.base_view(), tuned, text, reference=reference, temperature=temperature)
+        if comparison := st.session_state.get("t3"):
+            left, right = st.columns(2)
+            with left:
+                st.subheader("Base model")
+                show_result(comparison.base)
+            with right:
+                st.subheader("Base model + adapter")
+                show_result(comparison.fine_tuned)
+            if comparison.reference is not None:
+                with st.expander("Reference answer (from the test pair)", expanded=True):
+                    st.code(comparison.reference, language=None, wrap_lines=True)
+
+        st.subheader("Compare all three techniques")
+        st.markdown(f"Zero-shot, few-shot (k = {THREE_WAY_K}) and fine-tuned on the same input, all on the 0.5B "
+                    "model. Watch the prompt token counts: zero-shot is cheap, few-shot is expensive, "
+                    "fine-tuned is cheap again, yet keeps the style.")
+        if st.button("Run the three-way comparison", key="t3_three_go"):
+            tuned = get_adapted_model()
+            with st.spinner("Generating three outputs…"):
+                st.session_state["t3_three"] = run_three_way_comparison(
+                    tuned.base_view(), tuned, text, temperature=temperature)
+        if results := st.session_state.get("t3_three"):
+            for col, result in zip(st.columns(3), results):
+                with col:
+                    st.subheader(result.technique)
+                    show_result(result)
+
+        st.subheader("What training did")
+        if history := load_loss_history():
+            cfg = history["config"]
+            st.markdown("Training loss: how wrong the model's next-token guesses on the reference emails were "
+                        "(lower = closer). It falls fast because the dataset's emails follow a few strict templates.")
+            st.line_chart({"loss": [s["loss"] for s in history["steps"]]}, x_label="optimizer step",
+                          y_label="training loss")
+            st.caption(f"{cfg['train_pairs']} training pairs · {cfg['epochs']} epochs · LoRA r={cfg['lora_r']} on "
+                       f"{', '.join(cfg['target_modules'])} · lr {cfg['learning_rate']} · effective batch "
+                       f"{cfg['batch_size'] * cfg['grad_accum']} · final loss {history['steps'][-1]['loss']}")
+        else:
+            st.info("No loss history found next to the adapter.")
+        train = train_test_split().train
+        n = st.slider("Browse training pairs", 1, len(train), 1, key="t3_browse",
+                      help="The adapter learned from these 180 pairs (the 20 test pairs above were held out).")
+        left, right = st.columns(2)
+        left.markdown("**Notes (input)**")
+        left.code(train[n - 1].input, language=None, wrap_lines=True)
+        right.markdown("**Email (output)**")
+        right.code(train[n - 1].output, language=None, wrap_lines=True)
 
 # ---------- ④ Image ----------
 import io  # noqa: E402
