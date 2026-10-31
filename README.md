@@ -48,6 +48,23 @@ The first click is slow while the model downloads and loads; after that it is ca
 - The output.
 - The style checklist: each check passes or fails, with its evidence. Email checks `Subject:`, `Body:`, a greeting, a sign-off with `{name}`, and whether every point from the notes was kept; social media counts emoji and hashtags.
 
+### ④ Image
+
+**What it shows:** how a depth map carries a reference image's composition into image generation, and how strength and guidance shape the result.
+
+**You provide:** one of two public-domain reference images (or your own upload), one of two prompts per reference image, and a strength (0.3 / 0.5 / 0.7 / 0.9) and guidance (3 / 7.5 / 12) value.
+
+**What happens:**
+1. Depth Anything V2 Small computes the depth map live on CPU (first run downloads ~100 MB).
+2. The sliders snap to the values precomputed in the image grid, and the app looks the image up by its parameters in `data/grid/manifest.json`.
+3. On a GPU device only (`STE_DEVICE=cuda`), *Generate live* runs the same SD1.5 + depth ControlNet pipeline on your prompt.
+
+**What you see:**
+- The reference image next to its depth map.
+- The grid image for the chosen settings, with its seed, steps and models; optionally the full 4 × 3 grid.
+- The same prompt with and without depth conditioning (strength 0.7, guidance 7.5).
+- Placeholders with instructions until the grid is rendered: run `scripts/render_grid.py` on a Colab T4 (how-to at the top of the script) and commit `data/grid/`. See [ADR 0002](docs/adr/0002-precomputed-image-grid-instead-of-live-generation.md) for why the grid is precomputed.
+
 ## Project structure
 
 ```
@@ -58,7 +75,12 @@ style_lab/
   prompts.py            Builds the chat messages for each technique.
   presets.py            Style presets: instructions, default input, example pairs, checklist.
   checklist.py          The style checklist, as pure functions.
-tests/                  Fake text model, no downloads.
+  image_grid.py         Reference images, prompts, grid axes, and the grid manifest (written by the script, read by the app).
+  depth.py              Depth maps with Depth Anything V2 Small (app and grid script).
+  live_generation.py    SD1.5 + depth ControlNet img2img; GPU only.
+scripts/render_grid.py  Colab T4 script that renders the image grid and its manifest.
+data/images/            The two reference images (512 px).
+tests/                  Fake text model and fake grid manifests, no downloads.
 docs/adr/               Architecture decisions.
 ```
 
@@ -66,7 +88,12 @@ docs/adr/               Architecture decisions.
 
 - Text runs on a local Qwen2.5 model instead of OpenAI `gpt-3.5-turbo` (see [ADR 0001](docs/adr/0001-local-qwen-instead-of-openai.md)).
 - Social media instructions go in a system message rather than the first line of a single user message.
+- Depth maps use Depth Anything V2 Small instead of the notebook's default DPT-Large, and the image results come from a precomputed grid instead of live generation (see [ADR 0002](docs/adr/0002-precomputed-image-grid-instead-of-live-generation.md)). The grid uses a fixed seed and 50 steps (the notebook uses 100 steps and no seed); images without depth conditioning use the same pipeline with the ControlNet's conditioning scale set to 0.
 
 ## Credits
 
 The source notebooks are from [Generative AI Design Patterns](https://github.com/lakshmanok/generative-ai-design-patterns) by Valliappa Lakshmanan and Hannes Hapke (Apache License 2.0).
+
+Reference images (public domain, via Wikimedia Commons; resized to 512 px in `data/images/`):
+- *Wanderer above the Sea of Fog* (c. 1817), Caspar David Friedrich: [Commons page](https://commons.wikimedia.org/wiki/File:Caspar_David_Friedrich_-_Wanderer_above_the_sea_of_fog.jpg)
+- *Paris Street; Rainy Day* (1877), Gustave Caillebotte: [Commons page](https://commons.wikimedia.org/wiki/File:Gustave_Caillebotte_-_Paris_Street;_Rainy_Day_-_Google_Art_Project.jpg)

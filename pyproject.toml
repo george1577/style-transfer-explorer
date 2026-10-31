@@ -8,6 +8,10 @@ dependencies = [
     "streamlit>=1.40",
     "torch>=2.5",
     "transformers>=4.46",
+    # Image (tab ④): depth maps, optional live generation
+    "accelerate>=1.0",
+    "diffusers>=0.30",
+    "pillow>=10",
 ]
 
 [dependency-groups]
