@@ -2,7 +2,10 @@
 
 Pipelines depend on the `TextModel` protocol, so tests pass a fake and the app passes a `QwenTextModel`.
 """
+import contextlib
+import copy
 import os
+from pathlib import Path
 from typing import Protocol
 
 from style_lab.prompts import Message
@@ -55,6 +58,14 @@ class QwenTextModel:
         return len(self.tokenizer(text, add_special_tokens=False)["input_ids"])
 
     def generate(self, messages: list[Message], max_new_tokens: int, temperature: float) -> str:
+        with self._weights():
+            return self._generate(messages, max_new_tokens, temperature)
+
+    def _weights(self):
+        """Context that selects which weights generate with. Plain models have only one set."""
+        return contextlib.nullcontext()
+
+    def _generate(self, messages: list[Message], max_new_tokens: int, temperature: float) -> str:
         import torch
 
         prompt = self.render_prompt(messages)
@@ -71,3 +82,29 @@ class QwenTextModel:
             )
         new_ids = out[0, inputs["input_ids"].shape[1]:]
         return self.tokenizer.decode(new_ids, skip_special_tokens=True).strip()
+
+
+class AdaptedQwenTextModel(QwenTextModel):
+    """A Qwen2.5 model with a LoRA adapter loaded on top. `base_view()` is the same weights, adapter off.
+
+    Base and fine-tuned share one copy of the base weights (peft's `disable_adapter()`), so tab ③
+    costs one model's memory, not two.
+    """
+
+    def __init__(self, model_id: str, adapter_dir: Path):
+        from peft import PeftModel
+
+        super().__init__(model_id)
+        self.model = PeftModel.from_pretrained(self.model, str(adapter_dir))
+        self.model.eval()
+        self.name = f"{model_id} + adapter"
+        self.adapter_on = True
+
+    def base_view(self) -> "AdaptedQwenTextModel":
+        view = copy.copy(self)
+        view.adapter_on = False
+        view.name = self.name.removesuffix(" + adapter")
+        return view
+
+    def _weights(self):
+        return contextlib.nullcontext() if self.adapter_on else self.model.disable_adapter()
