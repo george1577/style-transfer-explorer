@@ -8,8 +8,9 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-MANIFEST_PATH = ROOT / "data" / "grid" / "manifest.json"
+from style_lab import REPO_ROOT
+
+MANIFEST_PATH = REPO_ROOT / "data" / "grid" / "manifest.json"
 
 # The precomputed axes; the app's sliders offer exactly these values.
 STRENGTHS = (0.3, 0.5, 0.7, 0.9)
@@ -35,7 +36,7 @@ REFERENCE_IMAGES = {
             key="wanderer",
             title="Wanderer above the Sea of Fog (c. 1817)",
             artist="Caspar David Friedrich",
-            path=ROOT / "data" / "images" / "wanderer.jpg",
+            path=REPO_ROOT / "data" / "images" / "wanderer.jpg",
             source_url="https://commons.wikimedia.org/wiki/File:Caspar_David_Friedrich_-_Wanderer_above_the_sea_of_fog.jpg",
             prompts=(
                 "Star Wars' Darth Vader with a red light saber",  # notebook 3's prompt
@@ -46,7 +47,7 @@ REFERENCE_IMAGES = {
             key="paris-street",
             title="Paris Street; Rainy Day (1877)",
             artist="Gustave Caillebotte",
-            path=ROOT / "data" / "images" / "paris-street-rainy-day.jpg",
+            path=REPO_ROOT / "data" / "images" / "paris-street-rainy-day.jpg",
             source_url="https://commons.wikimedia.org/wiki/File:Gustave_Caillebotte_-_Paris_Street;_Rainy_Day_-_Google_Art_Project.jpg",
             prompts=(
                 "a neon-lit cyberpunk city street at night in the rain, people with umbrellas",
@@ -57,15 +58,33 @@ REFERENCE_IMAGES = {
 }
 
 
+@dataclass(frozen=True)
+class GridParams:
+    """What one grid image was generated with; the grid script renders them, the app looks images up by them."""
+    reference: str  # a REFERENCE_IMAGES key
+    prompt: str
+    strength: float
+    guidance: float
+    depth_conditioned: bool = True
+
+    def __post_init__(self):
+        # Normalise so that equal settings compare equal however they were written (12 vs 12.0, JSON floats).
+        object.__setattr__(self, "strength", round(float(self.strength), 3))
+        object.__setattr__(self, "guidance", round(float(self.guidance), 3))
+        object.__setattr__(self, "depth_conditioned", bool(self.depth_conditioned))
+
+    @property
+    def filename(self) -> str:
+        # Only for humans browsing the folder; the app finds images through the manifest.
+        slug = re.sub(r"[^a-z0-9]+", "-", self.prompt.lower()).strip("-")[:40]
+        depth = "depth" if self.depth_conditioned else "nodepth"
+        return f"{self.reference}_{slug}_s{self.strength}_g{self.guidance}_{depth}.jpg"
+
 
 @dataclass(frozen=True)
 class GridImage:
     path: Path
-    reference: str
-    prompt: str
-    strength: float
-    guidance: float
-    depth_conditioned: bool
+    params: GridParams
     seed: int
     steps: int
     models: dict
@@ -79,12 +98,7 @@ class Missing:
 
 class GridIndex:
     def __init__(self, images: list[GridImage]):
-        self._images = {self._key(i.reference, i.prompt, i.strength, i.guidance, i.depth_conditioned): i
-                        for i in images}
-
-    @staticmethod
-    def _key(reference, prompt, strength, guidance, depth_conditioned):
-        return (reference, prompt, round(float(strength), 3), round(float(guidance), 3), bool(depth_conditioned))
+        self._images = {i.params: i for i in images}
 
     @classmethod
     def load(cls, manifest_path: Path) -> "GridIndex":
@@ -93,16 +107,16 @@ class GridIndex:
             return cls([])
         data = json.loads(manifest_path.read_text())
         images = [
-            GridImage(path=manifest_path.parent / e["file"], reference=e["reference"], prompt=e["prompt"],
-                      strength=e["strength"], guidance=e["guidance"], depth_conditioned=e["depth_conditioned"],
+            GridImage(path=manifest_path.parent / e["file"],
+                      params=GridParams(e["reference"], e["prompt"], e["strength"], e["guidance"],
+                                        e["depth_conditioned"]),
                       seed=data["seed"], steps=data["steps"], models=data["models"])
             for e in data["images"]
         ]
         return cls(images)
 
-    def lookup(self, reference: str, prompt: str, strength: float, guidance: float,
-               depth_conditioned: bool = True) -> GridImage | Missing:
-        image = self._images.get(self._key(reference, prompt, strength, guidance, depth_conditioned))
+    def lookup(self, params: GridParams) -> GridImage | Missing:
+        image = self._images.get(params)
         if image is None:
             return Missing("not rendered yet" if self.is_empty else "not in the grid manifest")
         if not image.path.exists():
@@ -114,34 +128,17 @@ class GridIndex:
         return not self._images
 
 
-@dataclass(frozen=True)
-class GridJob:
-    """One image the grid script renders."""
-    reference: str
-    prompt: str
-    strength: float
-    guidance: float
-    depth_conditioned: bool = True
-
-    @property
-    def filename(self) -> str:
-        # Only for humans browsing the folder; the app finds images through the manifest.
-        slug = re.sub(r"[^a-z0-9]+", "-", self.prompt.lower()).strip("-")[:40]
-        depth = "depth" if self.depth_conditioned else "nodepth"
-        return f"{self.reference}_{slug}_s{self.strength}_g{self.guidance}_{depth}.jpg"
-
-
-def write_manifest(path: Path, jobs: list[GridJob], seed: int, steps: int, models: dict) -> None:
+def write_manifest(path: Path, jobs: list[GridParams], seed: int, steps: int, models: dict) -> None:
     images = [{"file": j.filename, "reference": j.reference, "prompt": j.prompt, "strength": j.strength,
                "guidance": j.guidance, "depth_conditioned": j.depth_conditioned} for j in jobs]
     Path(path).write_text(json.dumps({"seed": seed, "steps": steps, "models": models, "images": images}, indent=2))
 
 
-def grid_plan() -> list[GridJob]:
+def grid_plan() -> list[GridParams]:
     """Every image in the grid: each prompt at every strength x guidance, plus one without depth conditioning."""
     jobs = []
     for ref in REFERENCE_IMAGES.values():
         for prompt in ref.prompts:
-            jobs += [GridJob(ref.key, prompt, s, g) for s in STRENGTHS for g in GUIDANCES]
-            jobs.append(GridJob(ref.key, prompt, COMPARISON_STRENGTH, COMPARISON_GUIDANCE, depth_conditioned=False))
+            jobs += [GridParams(ref.key, prompt, s, g) for s in STRENGTHS for g in GUIDANCES]
+            jobs.append(GridParams(ref.key, prompt, COMPARISON_STRENGTH, COMPARISON_GUIDANCE, depth_conditioned=False))
     return jobs

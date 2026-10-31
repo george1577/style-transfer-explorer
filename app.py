@@ -1,30 +1,35 @@
 """Style Transfer Explorer: the Streamlit UI. The only file that knows about Streamlit."""
-from pathlib import Path
-
 import streamlit as st
 
+from style_lab import REPO_ROOT
+from style_lab.device import DEVICE_ENV_VAR, is_cuda, pick_device
 from style_lab.pipelines import TextResult, run_few_shot, run_zero_shot
-from style_lab.presets import PRESETS
+from style_lab.presets import PRESETS, StylePreset
 from style_lab.prompts import ExamplePair
-from style_lab.text_model import DEVICE_ENV_VAR, MODELS, QwenTextModel, pick_device
+from style_lab.text_model import MODELS, QwenTextModel
 
 DOC_LINK = "docs/how-style-transfer-works.md"
 # A relative path is not a working link inside Streamlit, so link to the repo's copy on GitHub.
 DOC_URL = f"https://github.com/george1577/style-transfer-explorer/blob/main/{DOC_LINK}"
-RESULT_KEYS = ("t1", "t2", "t3", "t3_three")
+RESULT_PREFIX = "result_"  # every generated result lives under this prefix; see result_key()
 
 st.set_page_config(page_title="Style Transfer Explorer", page_icon="🎨", layout="wide")
 
 
+def result_key(name: str) -> str:
+    """The session-state key for a generated result, so all results can be cleared together."""
+    return RESULT_PREFIX + name
+
+
 def code_version() -> str:
-    files = sorted((Path(__file__).parent / "style_lab").glob("*.py"))
+    files = sorted((REPO_ROOT / "style_lab").glob("*.py"))
     return "|".join(f"{f.name}:{f.stat().st_mtime_ns}" for f in files)
 
 
 # Drop results computed by older package code, so a stale result never masquerades as a new one.
 if st.session_state.get("_code_version") != (version := code_version()):
-    for key in RESULT_KEYS:
-        st.session_state.pop(key, None)
+    for key in [k for k in st.session_state if k.startswith(RESULT_PREFIX)]:
+        del st.session_state[key]
     st.session_state["_code_version"] = version
 
 
@@ -47,6 +52,25 @@ def show_result(result: TextResult) -> None:
     )
 
 
+def show_expected_output(expected: str) -> None:
+    with st.expander("Expected email (from the test pair)", expanded=True):
+        st.code(expected, language=None, wrap_lines=True)
+
+
+def style_transfer_inputs(tab: str, examples=None) -> tuple[StylePreset, str, str, list[ExamplePair]]:
+    """Tabs ① and ②'s controls: style preset, instructions, then the input.
+
+    `examples(preset)`, if given, draws extra controls between the instructions and the input (the order the
+    prompt has them in) and returns the example pairs to use.
+    """
+    preset = PRESETS[st.selectbox("Style preset", list(PRESETS), key=f"{tab}_preset")]
+    instructions = st.text_area("Instructions (system prompt)", preset.instructions,
+                                key=f"{tab}_instructions_{preset.name}")
+    pairs = examples(preset) if examples else []
+    text = st.text_area("Input", preset.default_input, height=180, key=f"{tab}_input_{preset.name}")
+    return preset, instructions, text, pairs
+
+
 with st.sidebar:
     st.title("🎨 Style Transfer Explorer")
     model_id = st.selectbox("Model", MODELS,
@@ -67,46 +91,45 @@ with tab1:
         "Pick a style preset, edit the instructions if you like, and see what the model makes of them. "
         "The style checklist shows which style features the output has and whether the content was kept."
     )
-    preset = PRESETS[st.selectbox("Style preset", list(PRESETS), key="t1_preset")]
-    instructions = st.text_area("Instructions (system prompt)", preset.instructions,
-                                key=f"t1_instructions_{preset.name}")
-    text = st.text_area("Input", preset.default_input, height=180, key=f"t1_input_{preset.name}")
+    preset, instructions, text, _ = style_transfer_inputs("t1")
     if st.button("Generate", type="primary", key="t1_go"):
         with st.spinner("Generating…"):
-            st.session_state["t1"] = run_zero_shot(lm, preset, text, instructions, temperature=temperature)
-    if result := st.session_state.get("t1"):
+            st.session_state[result_key("t1")] = run_zero_shot(lm, preset, text, instructions,
+                                                               temperature=temperature)
+    if result := st.session_state.get(result_key("t1")):
         show_result(result)
 
 with tab2:
     st.header("② Few-shot")
     st.markdown(
-        "Few-shot style transfer is zero-shot plus example pairs: input→output demonstrations placed in the "
+        "Few-shot style transfer is zero-shot plus example pairs: input→output examples placed in the "
         "prompt before the new input. Slide k to add examples and watch the prompt, its token count and the "
         "style checklist change together. At k = 0 the prompt is exactly the zero-shot prompt."
     )
-    preset = PRESETS[st.selectbox("Style preset", list(PRESETS), key="t2_preset")]
-    available = preset.example_pairs()
-    max_k = min(8, len(available))
-    k = st.slider("k (example pairs in the prompt)", 0, max_k, min(3, max_k), key=f"t2_k_{preset.name}")
-    if max_k < 8:
-        st.caption(f"This preset has {len(available)} example pairs (notebook 1's), so k stops at {max_k}.")
-    elif preset.name == "Professional email":
-        st.caption("Email example pairs come, in fixed order, from the dataset's 180 training pairs; "
-                   "the 20 test pairs never appear in a prompt.")
-    instructions = st.text_area("Instructions (system prompt)", preset.instructions,
-                                key=f"t2_instructions_{preset.name}")
-    pairs = []
-    for i, pair in enumerate(available[:k], start=1):
-        with st.expander(f"Example pair {i} (editable)"):
-            pair_in = st.text_area("Input", pair.input, key=f"t2_pair_in_{preset.name}_{i}")
-            pair_out = st.text_area("Output", pair.output, height=200, key=f"t2_pair_out_{preset.name}_{i}")
-            pairs.append(ExamplePair(pair_in, pair_out))
-    text = st.text_area("Input", preset.default_input, height=180, key=f"t2_input_{preset.name}")
+
+    def editable_example_pairs(preset: StylePreset) -> list[ExamplePair]:
+        available = preset.example_pairs()
+        max_k = min(8, len(available))
+        k = st.slider("k (example pairs in the prompt)", 0, max_k, min(3, max_k), key=f"t2_k_{preset.name}")
+        if max_k < 8:
+            st.caption(f"This preset has {len(available)} example pairs (notebook 1's), so k stops at {max_k}.")
+        elif preset.name == "Professional email":
+            st.caption("Email example pairs come, in fixed order, from the dataset's 180 training pairs; "
+                       "the 20 test pairs never appear in a prompt.")
+        pairs = []
+        for i, pair in enumerate(available[:k], start=1):
+            with st.expander(f"Example pair {i} (editable)"):
+                pair_in = st.text_area("Input", pair.input, key=f"t2_pair_in_{preset.name}_{i}")
+                pair_out = st.text_area("Output", pair.output, height=200, key=f"t2_pair_out_{preset.name}_{i}")
+                pairs.append(ExamplePair(pair_in, pair_out))
+        return pairs
+
+    preset, instructions, text, pairs = style_transfer_inputs("t2", editable_example_pairs)
     if st.button("Generate", type="primary", key="t2_go"):
         with st.spinner("Generating…"):
-            st.session_state["t2"] = run_few_shot(lm, preset, text, k, instructions, example_pairs=pairs,
-                                                  temperature=temperature)
-    if result := st.session_state.get("t2"):
+            st.session_state[result_key("t2")] = run_few_shot(lm, preset, text, len(pairs), instructions,
+                                                              example_pairs=pairs, temperature=temperature)
+    if result := st.session_state.get(result_key("t2")):
         show_result(result)
 
 # ---------- ③ Fine-tuned ----------
@@ -131,18 +154,18 @@ def get_adapted_model() -> AdaptedQwenTextModel:
 with tab3:
     st.header("③ Fine-tuned")
     st.markdown(
-        "Fine-tuning teaches the style through training instead of through the prompt. A small **adapter** "
-        "(LoRA, ~4 MB) was trained on the dataset's 180 training pairs on top of the 0.5B **base model**. "
-        "Both models below get the same short prompt (system prompt + notes, no examples): any difference "
-        "is what training added. Inputs are the 20 **test pairs**, which the adapter never saw."
+        "Fine-tuning builds the style into the model's weights instead of describing or showing it in the prompt. "
+        "A small **adapter** (LoRA, ~4 MB) was fine-tuned on the dataset's 180 training pairs on top of the 0.5B "
+        "**base model**. Both models below get the same short prompt (system prompt + notes, no examples): any "
+        "difference is what fine-tuning added. Inputs are the 20 **test pairs**, which the adapter never saw."
     )
     if model_id != ADAPTER_BASE_MODEL:
         st.info(f"The sidebar says **{model_id}**, but this tab always uses **{ADAPTER_BASE_MODEL}**: an adapter "
-                "only works with the base model it was trained on (it stores small changes to that model's weights).")
+                "only works with the base model it was fine-tuned from (it stores small changes to that model's weights).")
     st.caption("The adapter is email-only, so this tab has no style preset dropdown.")
 
     if not adapter_available():
-        st.warning(f"**No adapter found** in `{ADAPTER_DIR.relative_to(Path(__file__).parent)}`. Train it with\n\n"
+        st.warning(f"**No adapter found** in `{ADAPTER_DIR.relative_to(REPO_ROOT)}`. Fine-tune it with\n\n"
                    f"```\n{TRAIN_COMMAND}\n```\n\nIt takes about 80 minutes on an M2 CPU and writes the adapter "
                    "and its loss history there. Then reload this page.")
     else:
@@ -150,18 +173,19 @@ with tab3:
         labels = [f"Test pair {i}: {p.input.splitlines()[0][:70]}" for i, p in enumerate(test_pairs, start=1)]
         choice = st.selectbox("Input", [*labels, FREE_TEXT], key="t3_choice")
         if choice == FREE_TEXT:
-            text, reference = st.text_area("Your notes", FREE_TEXT_DEFAULT, height=120, key="t3_free"), None
+            pair, text = None, st.text_area("Your notes", FREE_TEXT_DEFAULT, height=120, key="t3_free")
         else:
             pair = test_pairs[labels.index(choice)]
-            text, reference = pair.input, pair.output
+            text = pair.input
             st.code(text, language=None, wrap_lines=True)
 
         if st.button("Generate base vs fine-tuned", type="primary", key="t3_go"):
             tuned = get_adapted_model()
             with st.spinner("Generating with the base model, then with the adapter…"):
-                st.session_state["t3"] = run_fine_tuned_comparison(
-                    tuned.base_view(), tuned, text, reference=reference, temperature=temperature)
-        if comparison := st.session_state.get("t3"):
+                st.session_state[result_key("t3")] = run_fine_tuned_comparison(
+                    tuned.base_view(), tuned, text, expected_output=pair.output if pair else None,
+                    temperature=temperature)
+        if comparison := st.session_state.get(result_key("t3")):
             left, right = st.columns(2)
             with left:
                 st.subheader("Base model")
@@ -169,29 +193,32 @@ with tab3:
             with right:
                 st.subheader("Base model + adapter")
                 show_result(comparison.fine_tuned)
-            if comparison.reference is not None:
-                with st.expander("Reference answer (from the test pair)", expanded=True):
-                    st.code(comparison.reference, language=None, wrap_lines=True)
+            if comparison.expected_output is not None:
+                show_expected_output(comparison.expected_output)
 
         st.subheader("Compare all three techniques")
-        st.markdown(f"Zero-shot, few-shot (k = {THREE_WAY_K}) and fine-tuned on the same input, all on the 0.5B "
+        st.markdown(f"Zero-shot, few-shot (k = {THREE_WAY_K}) and fine-tuned on the same test pair, all on the 0.5B "
                     "model. Watch the prompt token counts: zero-shot is cheap, few-shot is expensive, "
                     "fine-tuned is cheap again, yet keeps the style.")
-        if st.button("Run the three-way comparison", key="t3_three_go"):
+        if pair is None:
+            st.caption("The three-way comparison runs only on a test pair, so that none of the three techniques "
+                       "has seen its input and its expected email can be shown. Pick a test pair above.")
+        if st.button("Run the three-way comparison", key="t3_three_go", disabled=pair is None):
             tuned = get_adapted_model()
             with st.spinner("Generating three outputs…"):
-                st.session_state["t3_three"] = run_three_way_comparison(
-                    tuned.base_view(), tuned, text, temperature=temperature)
-        if results := st.session_state.get("t3_three"):
-            for col, result in zip(st.columns(3), results):
+                st.session_state[result_key("t3_three")] = run_three_way_comparison(
+                    tuned.base_view(), tuned, pair, temperature=temperature)
+        if three_way := st.session_state.get(result_key("t3_three")):
+            for col, result in zip(st.columns(3), three_way.results):
                 with col:
                     st.subheader(result.technique)
                     show_result(result)
+            show_expected_output(three_way.expected_output)
 
-        st.subheader("What training did")
+        st.subheader("What fine-tuning did")
         if history := load_loss_history():
             cfg = history["config"]
-            st.markdown("Training loss: how wrong the model's next-token guesses on the reference emails were "
+            st.markdown("Training loss: how wrong the model's next-token guesses on the expected emails were "
                         "(lower = closer). It falls fast because the dataset's emails follow a few strict templates.")
             st.line_chart({"loss": [s["loss"] for s in history["steps"]]}, x_label="optimizer step",
                           y_label="training loss")
@@ -202,7 +229,7 @@ with tab3:
             st.info("No loss history found next to the adapter.")
         train = train_test_split().train
         n = st.slider("Browse training pairs", 1, len(train), 1, key="t3_browse",
-                      help="The adapter learned from these 180 pairs (the 20 test pairs above were held out).")
+                      help="The adapter was fine-tuned on these 180 pairs (the 20 test pairs above were held out).")
         left, right = st.columns(2)
         left.markdown("**Notes (input)**")
         left.code(train[n - 1].input, language=None, wrap_lines=True)
@@ -217,7 +244,7 @@ from PIL import Image  # noqa: E402
 from style_lab.depth import DepthEstimator  # noqa: E402
 from style_lab.image_grid import (  # noqa: E402
     COMPARISON_GUIDANCE, COMPARISON_STRENGTH, GUIDANCES, MANIFEST_PATH, REFERENCE_IMAGES, STRENGTHS,
-    GridImage, GridIndex)
+    GridImage, GridIndex, GridParams)
 from style_lab.live_generation import DepthImg2Img, live_generation_available  # noqa: E402
 
 UPLOAD = "Upload your own…"
@@ -250,11 +277,13 @@ def load_for_tab4(data: bytes) -> tuple[Image.Image, bytes]:
     return image, buf.getvalue()
 
 
-def show_grid_image(found, caption: str) -> None:
+def show_grid_image(index: GridIndex, params: GridParams, caption: str) -> None:
+    found = index.lookup(params)
     if isinstance(found, GridImage):
+        p = found.params
         st.image(str(found.path), caption=caption, width="stretch")
-        st.caption(f"seed {found.seed} · {found.steps} steps · strength {found.strength} · guidance {found.guidance}"
-                   f" · depth conditioning {'on' if found.depth_conditioned else 'off'}  \n"
+        st.caption(f"seed {found.seed} · {found.steps} steps · strength {p.strength} · guidance {p.guidance}"
+                   f" · depth conditioning {'on' if p.depth_conditioned else 'off'}  \n"
                    + " · ".join(f"{k}: `{v}`" for k, v in found.models.items()))
     else:
         st.info(f"🖼️ **Placeholder: {caption}**\n\nImage {found.reason}. Render it with `scripts/render_grid.py`.")
@@ -268,8 +297,8 @@ with tab4:
         "**depth conditioning** steers generation with it. Start with the depth map, then explore how "
         "strength and guidance shape the result."
     )
-    gpu = pick_device()
-    depth_device = "cuda" if gpu.startswith("cuda") else "cpu"  # the depth model is small; CPU is fine
+    device = pick_device()
+    depth_device = device if is_cuda(device) else "cpu"  # the depth model is small; CPU is fine
 
     st.subheader("1. Reference image and its depth map")
     labels = {f"{r.title}, {r.artist}": key for key, r in REFERENCE_IMAGES.items()}
@@ -310,7 +339,8 @@ with tab4:
         guidance = st.select_slider("Guidance", GUIDANCES, value=COMPARISON_GUIDANCE, key="t4_guidance",
                                     help="Snaps to the precomputed values.")
     with shown:
-        show_grid_image(index.lookup(grid_key, prompt, strength, guidance), f"strength {strength}, guidance {guidance}")
+        show_grid_image(index, GridParams(grid_key, prompt, strength, guidance),
+                        f"strength {strength}, guidance {guidance}")
     with notes:
         st.markdown(
             "**Strength** is how far generation may move away from the reference image's pixels: 0 would return "
@@ -326,7 +356,7 @@ with tab4:
         for s in STRENGTHS:
             for col, g in zip(st.columns(len(GUIDANCES)), GUIDANCES):
                 with col:
-                    show_grid_image(index.lookup(grid_key, prompt, s, g), f"strength {s}, guidance {g}")
+                    show_grid_image(index, GridParams(grid_key, prompt, s, g), f"strength {s}, guidance {g}")
 
     st.subheader("3. What the depth map adds")
     st.markdown(f"Same prompt, seed and steps at strength {COMPARISON_STRENGTH} / guidance {COMPARISON_GUIDANCE}, "
@@ -334,17 +364,17 @@ with tab4:
                 "the composition, so figures, horizon and perspective drift.")
     with_col, without_col = st.columns(2)
     with with_col:
-        show_grid_image(index.lookup(grid_key, prompt, COMPARISON_STRENGTH, COMPARISON_GUIDANCE, True),
+        show_grid_image(index, GridParams(grid_key, prompt, COMPARISON_STRENGTH, COMPARISON_GUIDANCE, True),
                         "with depth conditioning")
     with without_col:
-        show_grid_image(index.lookup(grid_key, prompt, COMPARISON_STRENGTH, COMPARISON_GUIDANCE, False),
+        show_grid_image(index, GridParams(grid_key, prompt, COMPARISON_STRENGTH, COMPARISON_GUIDANCE, False),
                         "without depth conditioning")
 
-    st.subheader("4. Generate live (GPU only)")
-    if not live_generation_available(gpu):
-        st.caption(f"Live generation needs a GPU device (running on **{gpu}**; set `{DEVICE_ENV_VAR}=cuda`). "
-                   "On a laptop CPU one image takes many minutes and SD1.5 does not fit comfortably in 8 GB, "
-                   "which is why this tab uses a precomputed grid (ADR 0002).")
+    st.subheader("4. Generate live (CUDA GPU only)")
+    if not live_generation_available(device):
+        st.caption(f"Live generation needs a CUDA GPU (running on **{device}**; set `{DEVICE_ENV_VAR}=cuda`). "
+                   "On a laptop CPU one image takes many minutes, SD1.5 does not fit comfortably in 8 GB, and "
+                   "MPS is unstable on older macOS, which is why this tab uses a precomputed grid (ADR 0002).")
     elif image is None:
         st.caption("Pick or upload a reference image first.")
     else:
@@ -353,7 +383,7 @@ with tab4:
         st.caption(f"Uses the reference image above at strength {strength} / guidance {guidance}.")
         if st.button("Generate live", type="primary", key="t4_live_go"):
             with st.spinner("Generating…"):
-                st.session_state["t4_live"] = get_live_generator(gpu).generate(
+                st.session_state[result_key("t4_live")] = get_live_generator(device).generate(
                     image, depth, live_prompt, strength, guidance, depth_conditioned=live_depth)
-        if (live := st.session_state.get("t4_live")) is not None:
+        if (live := st.session_state.get(result_key("t4_live"))) is not None:
             st.image(live, caption=live_prompt, width="stretch")

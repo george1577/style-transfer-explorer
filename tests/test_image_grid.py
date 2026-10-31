@@ -1,7 +1,7 @@
 """Seam A, image side: the grid index over a fake manifest (no models, no real grid)."""
 import json
 
-from style_lab.image_grid import GridImage, GridIndex, Missing
+from style_lab.image_grid import GridImage, GridIndex, GridParams, Missing
 
 SETTINGS = {"seed": 7, "steps": 30, "models": {"diffusion": "fake-sd", "controlnet": "fake-cn", "depth": "fake-depth"}}
 
@@ -31,11 +31,11 @@ def test_lookup_returns_the_image_for_those_parameters(tmp_path):
     ])
     index = GridIndex.load(manifest)
 
-    found = index.lookup("wanderer", "a knight", strength=0.7, guidance=12)
+    found = index.lookup(GridParams("wanderer", "a knight", strength=0.7, guidance=12))
 
     assert isinstance(found, GridImage)
     assert found.path == tmp_path / "grid" / "c.jpg"
-    assert (found.strength, found.guidance, found.depth_conditioned) == (0.7, 12, True)
+    assert found.params == GridParams("wanderer", "a knight", 0.7, 12.0, depth_conditioned=True)
     assert (found.seed, found.steps) == (7, 30)
     assert found.models == SETTINGS["models"]
 
@@ -47,45 +47,45 @@ def test_without_depth_conditioning_variant_resolves_separately(tmp_path):
     ])
     index = GridIndex.load(manifest)
 
-    with_depth = index.lookup("wanderer", "a knight", 0.7, 7.5, depth_conditioned=True)
-    without = index.lookup("wanderer", "a knight", 0.7, 7.5, depth_conditioned=False)
+    with_depth = index.lookup(GridParams("wanderer", "a knight", 0.7, 7.5, depth_conditioned=True))
+    without = index.lookup(GridParams("wanderer", "a knight", 0.7, 7.5, depth_conditioned=False))
 
     assert with_depth.path.name == "with.jpg"
     assert without.path.name == "without.jpg"
-    assert without.depth_conditioned is False
+    assert without.params.depth_conditioned is False
 
 
 def test_parameters_not_in_the_manifest_come_back_missing(tmp_path):
     manifest = write_fake_grid(tmp_path, [entry("a.jpg", strength=0.5, guidance=7.5)])
     index = GridIndex.load(manifest)
 
-    assert isinstance(index.lookup("wanderer", "a knight", 0.9, 7.5), Missing)
-    assert isinstance(index.lookup("wanderer", "a robot", 0.5, 7.5), Missing)
-    assert isinstance(index.lookup("wanderer", "a knight", 0.5, 7.5, depth_conditioned=False), Missing)
+    assert isinstance(index.lookup(GridParams("wanderer", "a knight", 0.9, 7.5)), Missing)
+    assert isinstance(index.lookup(GridParams("wanderer", "a robot", 0.5, 7.5)), Missing)
+    assert isinstance(index.lookup(GridParams("wanderer", "a knight", 0.5, 7.5, depth_conditioned=False)), Missing)
 
 
 def test_listed_image_whose_file_is_absent_comes_back_missing(tmp_path):
     manifest = write_fake_grid(tmp_path, [entry("a.jpg"), entry("gone.jpg", strength=0.9)], files=["a.jpg"])
 
-    assert isinstance(GridIndex.load(manifest).lookup("wanderer", "a knight", 0.9, 7.5), Missing)
+    assert isinstance(GridIndex.load(manifest).lookup(GridParams("wanderer", "a knight", 0.9, 7.5)), Missing)
 
 
 def test_before_the_grid_is_rendered_every_lookup_is_missing(tmp_path):
     index = GridIndex.load(tmp_path / "grid" / "manifest.json")
 
-    assert isinstance(index.lookup("wanderer", "a knight", 0.7, 7.5), Missing)
+    assert isinstance(index.lookup(GridParams("wanderer", "a knight", 0.7, 7.5)), Missing)
     assert index.is_empty
 
 
 def test_manifest_written_by_the_grid_script_is_read_by_the_app(tmp_path):
-    from style_lab.image_grid import GridJob, write_manifest
+    from style_lab.image_grid import write_manifest
 
-    job = GridJob(reference="paris", prompt="a snowy street", strength=0.3, guidance=3.0, depth_conditioned=False)
+    job = GridParams(reference="paris", prompt="a snowy street", strength=0.3, guidance=3.0, depth_conditioned=False)
     (tmp_path / job.filename).write_bytes(b"jpeg")
     write_manifest(tmp_path / "manifest.json", [job], seed=11, steps=40, models=SETTINGS["models"])
 
-    found = GridIndex.load(tmp_path / "manifest.json").lookup("paris", "a snowy street", 0.3, 3.0,
-                                                               depth_conditioned=False)
+    found = GridIndex.load(tmp_path / "manifest.json").lookup(GridParams("paris", "a snowy street", 0.3, 3.0,
+                                                               depth_conditioned=False))
 
     assert found.path == tmp_path / job.filename
     assert (found.seed, found.steps, found.models) == (11, 40, SETTINGS["models"])
@@ -108,13 +108,3 @@ def test_grid_plan_is_52_images_with_one_unconditioned_image_per_prompt():
     assert {(j.strength, j.guidance) for j in unconditioned} == {(0.7, 7.5)}
     assert {(j.reference, j.prompt) for j in unconditioned} == {
         (r.key, p) for r in REFERENCE_IMAGES.values() for p in r.prompts}
-
-
-
-def test_live_generation_is_offered_only_on_a_gpu_device():
-    from style_lab.live_generation import live_generation_available
-
-    assert live_generation_available("cuda")
-    assert live_generation_available("cuda:0")
-    assert live_generation_available("mps")
-    assert not live_generation_available("cpu")

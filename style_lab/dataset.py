@@ -1,7 +1,7 @@
 """The email example pairs from the book's dataset, and their deterministic train / test split.
 
 This split is the only source of email example pairs in the project: few-shot prompts (tab ②),
-the adapter training script, and the test-pair dropdown (tab ③) all read it from here.
+the adapter fine-tuning script, and the test-pair dropdown (tab ③) all read it from here.
 
 The dataset repeats some notes (140 unique notes in 200 records), so a plain random split would
 leak test notes into train. Test pairs are therefore drawn only from records whose notes appear
@@ -14,10 +14,11 @@ from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
 
+from style_lab import REPO_ROOT
 from style_lab.prompts import ExamplePair
 
-DATA_FILE = Path(__file__).parent.parent / "data" / "fine_tuning_dataset.jsonl"
-SEED = 42
+DATA_FILE = REPO_ROOT / "data" / "fine_tuning_dataset.jsonl"
+SPLIT_SEED = 42
 N_TEST = 20
 
 
@@ -43,7 +44,7 @@ def train_test_split() -> Split:
     pairs = load_example_pairs()
     counts = Counter(p.input for p in pairs)
     candidates = [i for i, p in enumerate(pairs) if counts[p.input] == 1]
-    random.Random(SEED).shuffle(candidates)
+    random.Random(SPLIT_SEED).shuffle(candidates)
     test_ids = set(candidates[:N_TEST])
     return Split(
         train=tuple(p for i, p in enumerate(pairs) if i not in test_ids),

@@ -1,9 +1,9 @@
 """LoRA-fine-tune Qwen2.5-0.5B-Instruct on the 180 train pairs, on CPU, and save the adapter.
 
-    uv run python scripts/train_adapter.py            # ~30-60 min on an M2 CPU
+    uv run python scripts/train_adapter.py            # ~80 minutes on an M2 CPU
 
 Each train pair becomes the same short prompt tab ③ sends (system prompt + notes, no examples)
-followed by the reference email. The chat template is applied, and the loss is computed on the
+followed by the expected email. The chat template is applied, and the loss is computed on the
 assistant tokens only, so the model learns to write the email, not to repeat the notes.
 
 Writes `adapters/qwen2.5-0.5b-email/` (adapter weights + config + loss_history.json).

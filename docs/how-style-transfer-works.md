@@ -2,7 +2,7 @@
 
 This guide explains **style transfer** from the ground up and walks through every tab of the Style Transfer Explorer app. No machine-learning background is needed. If a word is unfamiliar, check the [glossary](../GLOSSARY.md); the words in **bold** below are defined there.
 
-> **The 30-second version.** Style transfer rewrites an input so that its **content** is kept and its **style** changes. For text there are three ways to tell a model what style you want: describe it (**zero-shot**), show it a few **example pairs** in the prompt (**few-shot**), or train it on many examples (**fine-tuning**). Describing is cheap but vague; showing works better but every example costs prompt tokens on every call; training costs effort once, then gets the style from a short prompt. For images, a **depth map** carries the **reference image**'s composition (its content) while a text prompt sets the new look (its style).
+> **The 30-second version.** Style transfer rewrites an input so that its **content** is kept and its **style** changes. For text there are three ways to tell a model what style you want: describe it (**zero-shot**), show it a few **example pairs** in the prompt (**few-shot**), or fine-tune it on many examples (**fine-tuning**). Describing is cheap but vague; showing works better but every example costs prompt tokens on every call; fine-tuning costs effort once, then gets the style from a short prompt. For images, a **depth map** carries the **reference image**'s composition (its content) while a text prompt sets the new look (its style).
 
 All the examples below are real outputs from the app: Qwen2.5-0.5B-Instruct on CPU, temperature 0 (greedy, so you get the same output when you click), and the committed **adapter** in `adapters/qwen2.5-0.5b-email/`.
 
@@ -27,7 +27,7 @@ Judging "is this the right style?" by eye is unreliable, so every text output ge
 - **Professional email** (the dataset's format): has a `Subject:` line; has a `Body:` section; opens with a greeting (and says whether it uses `{name}`); ends with a sign-off followed by `{name}`; and **content kept**: does every point (bullet) from the notes appear in the email?
 - **Social media**: counts emoji and hashtags.
 
-Every one of the dataset's 200 reference emails has the same shape: `Subject: …`, a blank line, `Body: Hello {name},` (or *Hi*, *Dear*), the points from the notes as `- ` bullets copied word for word, and `Best regards,` / `{name}` at the end. The `{name}`, `{date}` etc. are placeholders that are meant to stay as written. That strict format makes the style easy to check, and, as you'll see, easy for a model to learn.
+Every one of the dataset's 200 example emails has the same shape: `Subject: …`, a blank line, `Body: Hello {name},` (or *Hi*, *Dear*), the points from the notes as `- ` bullets copied word for word, and `Best regards,` / `{name}` at the end. The `{name}`, `{date}` etc. are placeholders that are meant to stay as written. That strict format makes the style easy to check, and, as you'll see, easy for a model to learn.
 
 ---
 
@@ -134,19 +134,19 @@ Try editing an example pair in the app (they are editable expanders) to see what
 
 ---
 
-## 4. Fine-tuning: train the style in (tab ③)
+## 4. Fine-tuning: build the style into the weights (tab ③)
 
 ### The idea
 
-Instead of showing examples on every call, show them **once, during training**, and change the model's weights so it produces the style by itself. Afterwards the prompt is as short as zero-shot.
+Instead of showing examples on every call, show them **once, during fine-tuning**, and change the model's weights so it produces the style by itself. Afterwards the prompt is as short as zero-shot.
 
-Training a whole model is expensive, so the app uses **LoRA**: the **base model**'s weights are frozen, and a small set of extra weights, the **adapter**, is trained and added on top. Here the adapter is about 4 MB, next to the base model's ~1 GB. An adapter only works with the base model it was trained on, which is why tab ③ always uses the 0.5B model.
+Fine-tuning a whole model is expensive, so the app uses **LoRA**: the **base model**'s weights are frozen, and a small set of extra weights, the **adapter**, is trained and added on top. Here the adapter is about 4 MB, next to the base model's ~1 GB. An adapter only works with the base model it was fine-tuned from, which is why tab ③ always uses the 0.5B model.
 
-### What training did
+### What fine-tuning did
 
-`scripts/train_adapter.py` trained the adapter on the 180 training pairs, each sent as the short zero-shot prompt (system prompt + notes) followed by the reference email, with the loss computed only on the email. Settings, from `adapters/qwen2.5-0.5b-email/loss_history.json`: 3 epochs, 135 optimizer steps (effective batch 4), LoRA rank 8 on the attention projections (`q_proj`, `k_proj`, `v_proj`, `o_proj`), learning rate 2e-4, about 82 minutes on an M2 CPU.
+`scripts/train_adapter.py` fine-tuned the adapter on the 180 training pairs, each sent as the short zero-shot prompt (system prompt + notes) followed by the expected email, with the loss computed only on the email. Settings, from `adapters/qwen2.5-0.5b-email/loss_history.json`: 3 epochs, 135 optimizer steps (effective batch 4), LoRA rank 8 on the attention projections (`q_proj`, `k_proj`, `v_proj`, `o_proj`), learning rate 2e-4, about 80 minutes on an M2 CPU.
 
-The **training loss** measures how surprised the model is by the reference emails' next tokens; lower means it predicts them better.
+The **training loss** measures how surprised the model is by the expected emails' next tokens; lower means it predicts them better.
 
 | | Loss |
 |---|---|
@@ -256,7 +256,7 @@ Best regards,
 {name}
 ```
 
-It matches the test pair's reference answer word for word. That is not leakage: the test pair's notes appear nowhere in training, but the dataset writes every meeting summary with the same template, and the second few-shot example pair (an Engineering team meeting) uses that template too. Here few-shot copies the template from the prompt; the fine-tuned model has learned it into its weights.
+It matches the test pair's expected email word for word. That is not leakage: the test pair's notes appear nowhere in fine-tuning, but the dataset writes every meeting summary with the same template, and the second few-shot example pair (an Engineering team meeting) uses that template too. Here few-shot copies the template from the prompt; the fine-tuned model has learned it into its weights.
 
 This is the chapter's main lesson, in one row of the table:
 
@@ -268,10 +268,10 @@ flowchart LR
 
 | | Zero-shot | Few-shot | Fine-tuning |
 |---|---|---|---|
-| Effort up front | none | pick good example pairs | collect many pairs, train (here ~80 min CPU) |
+| Effort up front | none | pick good example pairs | collect many pairs, fine-tune (here ~80 min CPU) |
 | Prompt cost per call | low | high, grows with k | low |
-| Style quality | only what a description can say | good when examples match the input | good on the style it was trained on |
-| Flexibility | change the instructions any time | change the examples any time | retrain to change the style |
+| Style quality | only what a description can say | good when examples match the input | good on the style it was fine-tuned on |
+| Flexibility | change the instructions any time | change the examples any time | fine-tune again to change the style |
 
 ---
 
@@ -335,7 +335,7 @@ Every text tab calls one pipeline function, and every pipeline returns the same 
 | OpenAI `gpt-3.5-turbo` | Local Qwen2.5 0.5B (1.5B optional) | Free, and the exact prompt and token count are visible ([ADR 0001](adr/0001-local-qwen-instead-of-openai.md)). Writing is weaker. |
 | Temperature 0.7 / API default | Temperature 0 by default (slider) | Reproducible outputs, so techniques can be compared fairly. |
 | Notebook 1: instructions and `Input:` / `Output:` lines in one user message | Instructions as the system message; each example pair as a user turn + assistant turn | The same shape for every preset, and k = 0 is exactly the zero-shot prompt. |
-| Notebook 2: OpenAI fine-tuning job | A LoRA adapter trained locally on CPU and committed | No account or cost; training settings and loss curve are visible. |
-| Notebook 2: tests on a training example (and says it's bad practice) | 20 held-out test pairs, never in training or few-shot prompts | A fair comparison. The dataset repeats some notes, so test pairs are chosen only from notes that appear once (see the [README](../README.md#the-dataset-and-its-split)). |
+| Notebook 2: OpenAI fine-tuning job | A LoRA adapter fine-tuned locally on CPU and committed | No account or cost; fine-tuning settings and loss curve are visible. |
+| Notebook 2: tests on a training example (and says it's bad practice) | 20 held-out test pairs, never in fine-tuning or few-shot prompts | A fair comparison. The dataset repeats some notes, so test pairs are chosen only from notes that appear once (see the [README](../README.md#the-dataset-and-its-split)). |
 | Notebook 3: DPT-Large depth (pipeline default) | Depth Anything V2 Small | Small enough to run live on a laptop CPU. |
-| Notebook 3: one live image, 100 steps, no seed | Precomputed grid, 50 steps, fixed seed; live generation only on a GPU | An 8 GB laptop can't run SD1.5 usefully; a grid shows each parameter's effect side by side ([ADR 0002](adr/0002-precomputed-image-grid-instead-of-live-generation.md)). |
+| Notebook 3: one live image, 100 steps, no seed | Precomputed grid, 50 steps, fixed seed; live generation only on a CUDA GPU | An 8 GB laptop can't run SD1.5 usefully; a grid shows each parameter's effect side by side ([ADR 0002](adr/0002-precomputed-image-grid-instead-of-live-generation.md)). |

@@ -4,14 +4,13 @@ Pipelines depend on the `TextModel` protocol, so tests pass a fake and the app p
 """
 import contextlib
 import copy
-import os
 from pathlib import Path
 from typing import Protocol
 
+from style_lab.device import pick_device
 from style_lab.prompts import Message
 
 MODELS = ["Qwen/Qwen2.5-0.5B-Instruct", "Qwen/Qwen2.5-1.5B-Instruct"]
-DEVICE_ENV_VAR = "STE_DEVICE"
 
 
 class TextModel(Protocol):
@@ -25,16 +24,6 @@ class TextModel(Protocol):
 
     def generate(self, messages: list[Message], max_new_tokens: int, temperature: float) -> str:
         """The model's reply to `messages`. Temperature 0 means greedy decoding."""
-
-
-def pick_device() -> str:
-    # Apple's MPS backend is opt-in: recent torch builds crash on older macOS versions,
-    # and a 0.5B model is fast enough on CPU. Set STE_DEVICE=mps (or cuda) to override.
-    import torch
-
-    if os.environ.get(DEVICE_ENV_VAR):
-        return os.environ[DEVICE_ENV_VAR]
-    return "cuda" if torch.cuda.is_available() else "cpu"
 
 
 class QwenTextModel:

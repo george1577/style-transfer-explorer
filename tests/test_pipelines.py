@@ -1,4 +1,6 @@
 """Seam A: technique pipelines, driven by a fake text model (no downloads)."""
+import pytest
+
 from style_lab.dataset import train_test_split
 from style_lab.pipelines import (fine_tuned_inputs, run_few_shot, run_fine_tuned_comparison,
                                  run_three_way_comparison, run_zero_shot)
@@ -7,12 +9,15 @@ from style_lab.prompts import ExamplePair
 
 
 class FakeTextModel:
-    """Renders `role: content` lines, counts words as tokens, returns a canned output."""
+    """Renders `role: content` lines, counts words as tokens, and replies with `output`.
 
-    def __init__(self, output: str, name: str = "fake"):
+    `output` is a string, or a function of (messages, max_new_tokens, temperature) for tests that need
+    the reply to show what the model was given.
+    """
+
+    def __init__(self, output, name: str = "fake"):
         self.output = output
         self.name = name
-        self.calls = []
 
     def render_prompt(self, messages):
         return "\n".join(f"{m['role']}: {m['content']}" for m in messages) + "\nassistant:"
@@ -21,8 +26,12 @@ class FakeTextModel:
         return len(text.split())
 
     def generate(self, messages, max_new_tokens, temperature):
-        self.calls.append({"messages": messages, "max_new_tokens": max_new_tokens, "temperature": temperature})
-        return self.output
+        return self.output(messages, max_new_tokens, temperature) if callable(self.output) else self.output
+
+
+def settings_echo(messages, max_new_tokens, temperature):
+    """A reply that reports the sampling settings it was called with."""
+    return f"max_new_tokens={max_new_tokens} temperature={temperature}"
 
 
 EMAIL_OUTPUT = """Subject: Minutes
@@ -58,18 +67,13 @@ def test_zero_shot_returns_rendered_prompt_token_count_output_and_checklist():
 
 def test_zero_shot_uses_edited_instructions_and_sampling_settings():
     preset = PRESETS["Professional email"]
-    model = FakeTextModel("hello")
-
-    result = run_zero_shot(model, preset, "some notes", instructions="Write like a pirate.",
+    result = run_zero_shot(FakeTextModel(settings_echo), preset, "some notes", instructions="Write like a pirate.",
                            temperature=0.7, max_new_tokens=50)
 
-    assert result.prompt.startswith("system: Write like a pirate.\nuser: some notes")
-    assert model.calls == [{
-        "messages": [{"role": "system", "content": "Write like a pirate."},
-                     {"role": "user", "content": "some notes"}],
-        "max_new_tokens": 50,
-        "temperature": 0.7,
-    }]
+    assert result.prompt == "system: Write like a pirate.\nuser: some notes\nassistant:"
+    assert result.messages == [{"role": "system", "content": "Write like a pirate."},
+                               {"role": "user", "content": "some notes"}]
+    assert result.output == "max_new_tokens=50 temperature=0.7"
 
 
 def test_zero_shot_social_media_gets_social_media_checklist():
@@ -162,48 +166,71 @@ def test_fine_tuned_dropdown_offers_only_the_20_test_pairs():
     assert not any(c.input in train_inputs for c in choices)
 
 
+def short_email_prompt(notes):
+    """Tab ③'s short prompt: the email system prompt + the notes, no examples."""
+    return [{"role": "system", "content": PRESETS["Professional email"].instructions},
+            {"role": "user", "content": notes}]
+
+
 def test_fine_tuned_comparison_uses_the_base_and_adapter_models_it_was_given():
     pair = fine_tuned_inputs()[0]
     base = FakeTextModel("Dear team, here is an email.", name="base")
     tuned = FakeTextModel(pair.output, name="base + adapter")
 
-    comparison = run_fine_tuned_comparison(base, tuned, pair.input, reference=pair.output, temperature=0.3)
+    comparison = run_fine_tuned_comparison(base, tuned, pair.input, expected_output=pair.output)
 
-    assert comparison.base.output == "Dear team, here is an email."
-    assert comparison.base.model_name == "base"
-    assert comparison.fine_tuned.output == pair.output
-    assert comparison.fine_tuned.model_name == "base + adapter"
-    assert comparison.reference == pair.output
-    short_prompt = [{"role": "system", "content": PRESETS["Professional email"].instructions},
-                    {"role": "user", "content": pair.input}]
-    assert base.calls[0]["messages"] == short_prompt  # system prompt + notes, no examples
-    assert tuned.calls[0]["messages"] == short_prompt
-    assert base.calls[0]["temperature"] == tuned.calls[0]["temperature"] == 0.3
+    assert (comparison.base.model_name, comparison.base.output) == ("base", "Dear team, here is an email.")
+    assert (comparison.fine_tuned.model_name, comparison.fine_tuned.output) == ("base + adapter", pair.output)
+    assert comparison.base.technique == "Zero-shot"
+    assert comparison.fine_tuned.technique == "Fine-tuned"
+    assert comparison.expected_output == pair.output
+    assert comparison.base.messages == comparison.fine_tuned.messages == short_email_prompt(pair.input)
+    assert comparison.base.prompt == comparison.fine_tuned.prompt
     assert comparison.base.prompt_tokens == comparison.fine_tuned.prompt_tokens
     assert {c.name: c.passed for c in comparison.base.checklist}["Has Subject: line"] is False
     assert all(c.passed for c in comparison.fine_tuned.checklist)
 
 
-def test_fine_tuned_comparison_on_free_text_has_no_reference():
+def test_fine_tuned_comparison_passes_the_sampling_settings_to_both_models():
+    comparison = run_fine_tuned_comparison(FakeTextModel(settings_echo), FakeTextModel(settings_echo), "notes",
+                                           temperature=0.3, max_new_tokens=40)
+
+    assert comparison.base.output == comparison.fine_tuned.output == "max_new_tokens=40 temperature=0.3"
+
+
+def test_fine_tuned_comparison_on_free_text_has_no_expected_output():
     comparison = run_fine_tuned_comparison(FakeTextModel("a"), FakeTextModel("b"),
                                            "schedule a meeting with John about the Q4 planning")
-    assert comparison.reference is None
+    assert comparison.expected_output is None
 
 
-def test_three_way_comparison_returns_zero_shot_few_shot_and_fine_tuned_on_the_same_input():
+def test_three_way_comparison_runs_zero_shot_few_shot_and_fine_tuned_on_a_test_pair():
     pair = fine_tuned_inputs()[0]
     base = FakeTextModel("Dear team, here is an email.", name="base")
     tuned = FakeTextModel(pair.output, name="base + adapter")
 
-    results = run_three_way_comparison(base, tuned, pair.input)
+    comparison = run_three_way_comparison(base, tuned, pair)
+    results = comparison.results
 
+    assert comparison.expected_output == pair.output
     assert [r.technique for r in results] == ["Zero-shot", "Few-shot", "Fine-tuned"]
     assert [r.model_name for r in results] == ["base", "base", "base + adapter"]
+    assert [r.output for r in results] == ["Dear team, here is an email.", "Dear team, here is an email.",
+                                           pair.output]
     assert all(r.messages[-1] == {"role": "user", "content": pair.input} for r in results)
     assert all(r.checklist for r in results)
     zero, few, fine = results
     assert example_turns(few) == [(p.input, p.output) for p in train_test_split().train[:3]]  # k = 3
-    assert fine.messages == zero.messages  # fine-tuned is cheap again: the zero-shot prompt
+    assert fine.messages == zero.messages == short_email_prompt(pair.input)  # fine-tuned is cheap again
     assert fine.prompt_tokens == zero.prompt_tokens < few.prompt_tokens
     assert all(c.passed for c in fine.checklist)
     assert {c.name: c.passed for c in zero.checklist}["Has Subject: line"] is False
+
+
+def test_three_way_comparison_refuses_a_pair_that_is_not_a_test_pair():
+    train_pair = train_test_split().train[0]
+
+    with pytest.raises(ValueError, match="test pair"):
+        run_three_way_comparison(FakeTextModel("a"), FakeTextModel("b"), train_pair)
+    with pytest.raises(ValueError, match="test pair"):
+        run_three_way_comparison(FakeTextModel("a"), FakeTextModel("b"), ExamplePair("free text", "made up"))

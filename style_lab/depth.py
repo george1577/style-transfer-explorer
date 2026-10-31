@@ -8,7 +8,6 @@ class DepthEstimator:
     def __init__(self, device: str = "cpu"):
         from transformers import pipeline
 
-        self.device = device
         self._pipe = pipeline("depth-estimation", model=DEPTH_MODEL, device=device)
 
     def depth_map(self, image: Image.Image) -> Image.Image:

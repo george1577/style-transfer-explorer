@@ -13,7 +13,9 @@ Unzip it into the repo so the images land in `data/grid/`, and commit `data/grid
 
 What it renders: for each of the 2 reference images x 2 prompts, every strength (0.3/0.5/0.7/0.9) x guidance (3/7.5/12)
 with depth conditioning, plus one image without depth conditioning at strength 0.7 / guidance 7.5. Same seed and step
-count for every image. Grid contents and the manifest format live in `style_lab/image_grid.py`, shared with the app.
+count for every image. Images are not square: each keeps its reference image's aspect ratio, with a 512 px long
+side (the size the reference images are stored at). Grid contents and the manifest format live in
+`style_lab/image_grid.py`, shared with the app.
 """
 import sys
 import time
@@ -25,7 +27,7 @@ from PIL import Image  # noqa: E402
 
 from style_lab.depth import DEPTH_MODEL, DepthEstimator  # noqa: E402
 from style_lab.image_grid import MANIFEST_PATH, REFERENCE_IMAGES, grid_plan, write_manifest  # noqa: E402
-from style_lab.live_generation import CONTROLNET_MODEL, DIFFUSION_MODEL, SEED, STEPS, DepthImg2Img  # noqa: E402
+from style_lab.live_generation import CONTROLNET_MODEL, DIFFUSION_MODEL, DIFFUSION_SEED, STEPS, DepthImg2Img  # noqa: E402
 
 
 def main() -> None:
@@ -47,11 +49,11 @@ def main() -> None:
     for n, job in enumerate(jobs, 1):
         image = generator.generate(references[job.reference], depth_maps[job.reference], job.prompt,
                                    strength=job.strength, guidance=job.guidance,
-                                   depth_conditioned=job.depth_conditioned, seed=SEED, steps=STEPS)
+                                   depth_conditioned=job.depth_conditioned, seed=DIFFUSION_SEED, steps=STEPS)
         image.resize(references[job.reference].size).save(out_dir / job.filename, quality=88)
         print(f"[{n}/{len(jobs)}] {job.filename} ({time.time() - start:.0f}s)", flush=True)
 
-    write_manifest(MANIFEST_PATH, jobs, seed=SEED, steps=STEPS,
+    write_manifest(MANIFEST_PATH, jobs, seed=DIFFUSION_SEED, steps=STEPS,
                    models={"diffusion": DIFFUSION_MODEL, "controlnet": CONTROLNET_MODEL, "depth": DEPTH_MODEL})
     print(f"Wrote {len(jobs)} images and {MANIFEST_PATH}")
 

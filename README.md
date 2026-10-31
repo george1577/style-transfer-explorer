@@ -27,9 +27,9 @@ The first click is slow while the model downloads and loads; after that it is ca
 |---|---|---|
 | Model | Sidebar dropdown | Qwen2.5 0.5B Instruct (1.5B optional) |
 | Temperature | Sidebar slider | 0 (greedy, reproducible) |
-| Device | `STE_DEVICE=mps uv run streamlit run app.py` (or `cuda`, `cpu`) | CUDA if available, else CPU |
+| Device | `STE_DEVICE=mps uv run streamlit run app.py` (or `cuda`, `cpu`) | CPU (nothing is picked automatically) |
 
-> **Why not Apple's MPS by default?** Recent PyTorch builds crash on MPS on older macOS versions (seen on macOS 14), and a 0.5B model is fast enough on CPU.
+> **Why CPU by default?** A 0.5B model is fast enough on CPU, and recent PyTorch builds crash on Apple's MPS on older macOS versions (seen on macOS 14). Set `STE_DEVICE=cuda` to use an NVIDIA GPU; it is never chosen automatically.
 
 ---
 
@@ -72,24 +72,24 @@ The app has four tabs, meant to be followed in order. Each one adds one idea on 
 
 ### ③ Fine-tuned
 
-**What it shows:** what training an adapter adds: few-shot-like style at zero-shot-like token cost.
+**What it shows:** what fine-tuning adds: few-shot-like style at zero-shot-like token cost.
 
-**You provide:** one of the 20 test pairs from a dropdown, or your own notes (default: notebook 2's free-text test, "schedule a meeting with John about the Q4 planning"). There is no style preset dropdown, because the adapter is email-only. The tab always uses the 0.5B base model, whatever the sidebar says: an adapter only works with the base model it was trained on.
+**You provide:** one of the 20 test pairs from a dropdown, or your own notes (default: notebook 2's free-text test, "schedule a meeting with John about the Q4 planning"). There is no style preset dropdown, because the adapter is email-only. The tab always uses the 0.5B base model, whatever the sidebar says: an adapter only works with the base model it was fine-tuned from.
 
 **What happens when you click *Generate base vs fine-tuned*:**
 1. The input becomes the short zero-shot prompt (the email system prompt + the notes, no example pairs).
 2. The base model replies, then the same weights with the adapter switched on reply to the same prompt (one copy of the weights in memory; `peft` switches the adapter off for the base run).
 3. The style checklist checks both replies.
 
-**What happens when you click *Run the three-way comparison*:** zero-shot, few-shot (k = 3) and fine-tuned each run on the same input, all on the 0.5B model.
+**What happens when you click *Run the three-way comparison*:** zero-shot, few-shot (k = 3) and fine-tuned each run on the selected test pair, all on the 0.5B model. The comparison needs a test pair, so the button is disabled (with an explanation) while free text is selected.
 
 **What you see:**
-- Base and fine-tuned outputs side by side, each with its prompt token count, rendered prompt and style checklist, plus the test pair's reference answer.
-- The three-way comparison in three columns: watch the prompt token counts go cheap → expensive → cheap.
-- *What training did*: the training loss curve saved during training, the training settings, and a slider to browse the 180 training pairs the adapter learned from.
-- If the adapter is missing, instructions to train it.
+- Base and fine-tuned outputs side by side, each with its prompt token count, rendered prompt and style checklist, plus the test pair's expected email.
+- The three-way comparison in three columns, with the test pair's expected email below: watch the prompt token counts go cheap → expensive → cheap.
+- *What fine-tuning did*: the training loss curve saved during fine-tuning, the fine-tuning settings, and a slider to browse the 180 training pairs the adapter was fine-tuned on.
+- If the adapter is missing, instructions to fine-tune it.
 
-The adapter (LoRA, ~4 MB) and its loss history are committed in `adapters/qwen2.5-0.5b-email/`, so you don't need to train it. To reproduce it, run `uv run python scripts/train_adapter.py` (3 epochs over the 180 training pairs; it took about 80 minutes on an M2 CPU).
+The adapter (LoRA, ~4 MB) and its loss history are committed in `adapters/qwen2.5-0.5b-email/`, so you don't need to fine-tune it. To reproduce it, run `uv run python scripts/train_adapter.py` (3 epochs over the 180 training pairs; it took about 80 minutes on an M2 CPU).
 
 ### ④ Image
 
@@ -100,7 +100,7 @@ The adapter (LoRA, ~4 MB) and its loss history are committed in `adapters/qwen2.
 **What happens:**
 1. Depth Anything V2 Small computes the depth map live on CPU (first run downloads ~100 MB).
 2. The sliders snap to the values precomputed in the image grid, and the app looks the image up by its parameters in `data/grid/manifest.json`.
-3. On a GPU device only (`STE_DEVICE=cuda`), *Generate live* runs the same SD1.5 + depth ControlNet pipeline on your prompt.
+3. On a CUDA GPU only (`STE_DEVICE=cuda`; not MPS), *Generate live* runs the same SD1.5 + depth ControlNet pipeline on your prompt.
 
 **What you see:**
 - The reference image next to its depth map.
@@ -120,18 +120,19 @@ The dataset repeats some notes (only 140 of the 200 are unique), so a plain rand
 app.py                  Streamlit UI. The only file that knows about Streamlit.
 style_lab/
   text_model.py         Text model interface + Qwen implementation; the only file touching torch.
+  device.py             Device choice: CPU unless STE_DEVICE is set; is_cuda() for GPU-only features.
   pipelines.py          One function per tab; each returns a TextResult. The app calls only these.
-  adapter.py            Where the trained adapter and its loss history live.
+  adapter.py            Where the fine-tuned adapter and its loss history live.
   prompts.py            Builds the chat messages for each technique.
   presets.py            Style presets: instructions, default input, example pairs, checklist.
   dataset.py            Loads the email example pairs and makes the fixed 180/20 train/test split.
   checklist.py          The style checklist, as pure functions.
   image_grid.py         Reference images, prompts, grid axes, and the grid manifest (written by the script, read by the app).
   depth.py              Depth maps with Depth Anything V2 Small (app and grid script).
-  live_generation.py    SD1.5 + depth ControlNet img2img; GPU only.
-scripts/train_adapter.py  Trains the LoRA adapter on the 180 training pairs (CPU).
+  live_generation.py    SD1.5 + depth ControlNet img2img; CUDA GPU only.
+scripts/train_adapter.py  Fine-tunes the LoRA adapter on the 180 training pairs (CPU, ~80 minutes).
 scripts/render_grid.py  Colab T4 script that renders the image grid and its manifest.
-adapters/               The trained adapter and its loss history (committed).
+adapters/               The fine-tuned adapter and its loss history (committed).
 data/                   The book's email dataset (fine_tuning_dataset.jsonl).
 data/images/            The two reference images (512 px).
 tests/                  Fake text model and fake grid manifests, no downloads.
@@ -146,12 +147,12 @@ GLOSSARY.md             The project's vocabulary.
 Each change makes a technique runnable on a laptop or easier to inspect, without changing the technique. Section 8 of the [explainer](docs/how-style-transfer-works.md#8-where-the-app-differs-from-the-notebooks) explains why.
 
 - **Local Qwen instead of OpenAI.** Text runs on a local Qwen2.5 model (0.5B default, 1.5B optional) instead of OpenAI `gpt-3.5-turbo` (see [ADR 0001](docs/adr/0001-local-qwen-instead-of-openai.md)). Writing is weaker, but every click is free and the exact prompt and token count are visible. Temperature defaults to 0 (greedy) instead of the notebooks' 0.7 / API default.
-- **A local adapter instead of an OpenAI fine-tuning job.** Notebook 2 uploads the dataset to a paid OpenAI fine-tuning job. The app ships a LoRA adapter trained locally on CPU (`scripts/train_adapter.py`).
-- **A held-out test split.** Notebook 2 tests its fine-tuned model on a training example (and says that's bad practice). The app holds out 20 test pairs that never appear in training or in few-shot prompts (see [The dataset and its split](#the-dataset-and-its-split)).
+- **A local adapter instead of an OpenAI fine-tuning job.** Notebook 2 uploads the dataset to a paid OpenAI fine-tuning job. The app ships a LoRA adapter fine-tuned locally on CPU (`scripts/train_adapter.py`).
+- **A held-out test split.** Notebook 2 tests its fine-tuned model on a training example (and says that's bad practice). The app holds out 20 test pairs that never appear in fine-tuning or in few-shot prompts (see [The dataset and its split](#the-dataset-and-its-split)).
 - **Few-shot example pairs as chat turns.** Each example pair is a user turn followed by an assistant turn, rather than notebook 1's `Input:` / `Output:` lines in one message.
 - **Social media instructions as a system message**, rather than the first line of a single user message.
 - **Depth Anything V2 Small instead of DPT-Large** for depth maps (the notebook uses the `depth-estimation` pipeline's default, Intel DPT-Large); it is small enough to run live on CPU.
-- **A precomputed image grid instead of live generation** (see [ADR 0002](docs/adr/0002-precomputed-image-grid-instead-of-live-generation.md)). The grid uses a fixed seed and 50 steps (the notebook uses 100 steps and no seed); images without depth conditioning use the same pipeline with the ControlNet's conditioning scale set to 0. Live generation is offered only on a GPU.
+- **A precomputed image grid instead of live generation** (see [ADR 0002](docs/adr/0002-precomputed-image-grid-instead-of-live-generation.md)). The grid uses a fixed seed and 50 steps (the notebook uses 100 steps and no seed); images without depth conditioning use the same pipeline with the ControlNet's conditioning scale set to 0. Live generation is offered only on a CUDA GPU.
 
 ## Credits
 
